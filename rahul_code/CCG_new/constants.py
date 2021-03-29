@@ -1,14 +1,21 @@
+from CCG_new import strict_grammar_functions as gram_f
+from CCG_new import soft_grammar_functions as soft_gram_f
+import torch
+
 SPACE = "SPACE"
 PUNCT = "PUNCT"
 PHRASE = "PHRASE"
+
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
 
 RAW_GRAMMAR =''':- S,NP,N,PP
         VP :: S\\NP
         Det :: NP/N
         Adj :: N/N
         arg => NP {None}
-        #$True => (S\\VP)/PP {None}
-        #$False => (S\\VP)/PP {None}
         $And => var\\.,var/.,var {\\x y.'@And'(x,y)}
         $Or => var\\.,var/.,var {\\x y.'@Or'(x,y)}
         $Not => (S\\NP)\\(S\\NP) {None}
@@ -18,8 +25,6 @@ RAW_GRAMMAR =''':- S,NP,N,PP
         $All => NP/NP {None}
         $Any => NP/N {None}
         $None => N {None}
-        #$Is => (S\\NP)/NP {\\y x.'@Is'(x,y)}
-        #$Is => (S\\NP)/(S\\NP) {\\y x.'@Is'(x,y)}
         $Is => (S\\NP)/PP {\\y x.'@Is'(x,y)}   # word 'a' occurs between <S> and <O>
         $Is => (S\\NP)\\PP {\\y x.'@Is'(x,y)}  # between <S> and <O> occurs word 'a'
         $Is => (S\\PP)\\NP {\\x y.'@Is'(x,y)}  # between <S> and <O> word 'a' occurs
@@ -27,9 +32,6 @@ RAW_GRAMMAR =''':- S,NP,N,PP
         #$Exists => S\\NP {None}
         $Int => Adj {None} #There are no words between <S> and <O>
         $AtLeastOne => NP/N {None}
-        #$Equals => (S\\NP)/NP {None}
-        #$NotEquals => (S\\NP)/NP {None}
-        
         
         $LessThan => PP/PP/N {\\x y.'@LessThan'(y,x)} #There are less than 3 words between <S> and <O>   
         $AtMost => PP/PP/N {\\x y.'@AtMost'(y,x)} #There are at most 3 words between <S> and <O>
@@ -41,13 +43,8 @@ RAW_GRAMMAR =''':- S,NP,N,PP
         $AtLeast => PP/N {\\x.'@AtLeast1'(y,x)}   #same as above
         $MoreThan => PP/N {\\x.'@MoreThan1'(y,x)} #same as above
 
-        #$In => S\\NP/NP {None} 
-        # $In => PP/NP {\\x.'@In0'(x)} 
+        $In => PP/NP {\\x.'@In0'(x)} #never called?
         $Separator => var\\.,var/.,var {\\x y.'@And'(x,y)} #connection between two words
-        #$Processive => NP/N\\N {None}
-        #$Count => N {None}
-        #$Tuple => N {None}
-        #$ArgXListAnd => NP {None}
         $EachOther => N {None}
         $Token => N {\\x.'@Word'(x)}
         $Word => NP/N {\\x.'@Word'(x)}
@@ -57,20 +54,16 @@ RAW_GRAMMAR =''':- S,NP,N,PP
         $Word => NP {'tokens'} #There are no more than 3 words between <S> and <O>
         
         $Char => N {None} #same as above
-        #$Lower => Adj {None}
-        #$Capital => Adj {None}
         $StartsWith => S\\NP/NP {\\y x.'@StartsWith'(x,y)}
         $EndsWith => S\\NP/NP {\\y x.'@EndsWith'(x,y)}
         $Left => PP/NP {\\x.'@Left0'(x)} # the word 'a' is before <S>
         $Left => (S\\NP)/NP {\\y x.'@Left'(y,x)}  #Precedes
         $Right => PP/NP {\\x.'@Right0'(x)}# the word 'a' ia after <S>
         $Right => (S\\NP)/NP {\\y x.'@Right'(y,x)} 
-        #$Within => ((S\\NP)\\(S\\NP))/NP {None} # the word 'a' is within 2 words after <S>
-        #$Within => (NP\\NP)/NP {None}
         $Within => PP/PP/N {\\x y.'@AtMost'(y,x)} #Does Within has other meaning.
         $Sentence => NP {'Sentence'}
-        $Contains => S\\NP/NP {\\x y. '@In0'(y, x)} #y contains x
-        $In => S\\NP/NP {\\x y. '@In0'(x, y)} # y is in x
+        $Contains => S\\NP/NP {\\x y. '@In1'(y, x)} #y contains x
+        $In => S\\NP/NP {\\x y. '@In1'(x, y)} # y is in x
         $Between => (S/S)/NP {\\x y.'@between'(x,y)}
         $Between => S/NP {\\x.'@between'(x)}
         $Between => PP/NP {\\x.'@between'(x)}
@@ -84,11 +77,7 @@ RAW_GRAMMAR =''':- S,NP,N,PP
         $NorpNER => NP {'@Norp'}
         $ArgX => NP {'ArgX'}
         $ArgY => NP {'ArgY'}
-        #$will => S\\NP/VP {None}
-        #$Which => (NP\\NP)/(S/NP) {None}
-        #$might => S\\NP/VP {None}
         $that => NP/N {None}
-        #$that => (N\\N)/(S/NP) {None} #same as which
         $Apart => (S/PP)\\NP {None}
         $Direct => PP/PP {\\x.'@Direct'(x)} # the word 'a' is right before <S>   
         $Direct => (S\\NP)/PP {\\y x.'@Is'(x,'@Direct'(y))}
@@ -378,256 +367,74 @@ NER_TERMINAL_TO_EXECUTION_TUPLE = {
     '@PER':('NER','PERSON')
 }
 
-#------function of ops (Algorithm)--------
-'''
-ws: (word,word,word,....)  ('NER',NERTYPE) word 
-w: word ('NER',NERTYPE) 
-c: candidate  
-p: function 
-arg: ArgX or ArgY
-a: (Word1,Word2)
-'''
-#List of attributes we need to support besides 'word' and 'tokens'
-Selection = ['NER']
-
-
-
-def count_sublist(lis,sublis):
-    cnt = 0
-    if len(sublis)>len(lis):
-        return cnt
-    len_sub = len(sublis)
-    for st in range(len(lis)-len(sublis)+1):
-        if lis[st:st+len_sub]==sublis:
-            cnt+=1
-    return cnt
-
-
-#function for $And
-def merge(x,y):
-    if type(x)!= tuple:
-        x = [x]
-    if type(y)!= tuple:
-        y = [y]
-    x = list(x)
-    y = list(y)
-    return tuple(x+y)
-
-#function for $Is
-def IsFunc(ws,ps,c):
-    if isinstance(ps,tuple):
-        bool_list  = []
-        for p in ps:
-            if isinstance(ws, tuple):
-                if ws[0] in Selection:
-                    bool_list.append(p(ws)(c))
-                else:
-                    bool_list.append(all([p(w)(c) for w in ws]))
-            else:
-                bool_list.append(p(ws)(c))
-        return all(bool_list)
-
-    if isinstance(ws,tuple):
-        if ws[0] in Selection:
-            return ps(ws)(c)
-        else:
-            return all([ps(w)(c) for w in ws])
-    else:
-        return ps(ws)(c)
-
-#function for @Left and @Right
-def at_POSI(POSI,ws,arg,c,option=None):
-    if isinstance(ws,tuple):
-        if ws[0] in Selection:
-            return ws[1] in c.get_other_posi(POSI,arg[-1])[ws[0]]
-        else:
-            bool_list = []
-            for w in ws:
-                bool_list.append(at_POSI_0(POSI,arg,w,c,option))
-            return all(bool_list)
-    else:
-        return at_POSI_0(POSI,arg,ws,c,option)
-
-#function for @Left0 and @Right0
-def at_POSI_0(POSI,arg,w,c,option=None):
-    if arg not in ['ArgX','ArgY']:
-        w,arg = arg,w
-        if POSI == 'Left':
-            POSI = 'Right'
-        elif POSI == 'Right':
-            POSI = 'Left'
-
-    if isinstance(w,tuple) and w[0] not in Selection:
-        return all([at_POSI_0(POSI,arg,ww,c,option) for ww in w])
-
-    if w=='ArgY':
-        w = c.obj
-    elif w=='ArgX':
-        w = c.subj
-
-    if option==None:
-        option = {'attr': 'word', 'range': -1, 'numAppear':1,'cmp':'nlt','onlyCount':False}  #For now, if onlyCount==True, then attr=='tokens'
-    if isinstance(w,tuple):
-        return w[1] in c.get_other_posi(POSI, arg[-1])[w[0]]
-    else:                                                                                   #For now,option['attr']==tokens if and only if 'right before' is used or onlyCount==True, otherwise ==word
-        w = w.lower()
-        w_split = w.split()
-        while '' in w_split:
-            w_split.remove('')
-        if option == 'Direct':
-            range_ = len(w_split)
-            info = [token.lower() for token in c.get_other_posi(POSI, arg[-1])['tokens']]
-            if POSI == 'Left':
-                st = max(0, len(info) - range_)
-                info = info[st:]
-            elif POSI == 'Right':
-                ed = min(len(info) - 1, range_-1)
-                info = info[:ed + 1]
-            else:
-                raise ValueError
-            # print(info)
-            if info==w_split:
-                return True
-            else:
-                return False
-        if option['range']==-1:
-            info = [token.lower() for token in c.get_other_posi(POSI, arg[-1])['tokens']]
-        else:                                                                               #For now, if range!=-1 then attr == 'tokens'
-            info = [token.lower() for token in c.get_other_posi(POSI, arg[-1])[option['attr']]]
-            range_ = option['range']
-            if POSI == 'Left':
-                st = max(0, len(info) - range_)
-                info = info[st:]
-            elif POSI=='Right':
-                ed = min(len(info) - 1, range_-1)
-                info = info[:ed + 1]
-            else:
-                count_posi = c.get_other_posi(POSI, arg[-1])['POSI']
-                st = max(0,count_posi-range_)
-                ed = min(len(info),count_posi+1+range_)
-                info = info[st:ed+1]
-        if option['onlyCount']:
-            return compare[option['cmp']](len(info),option['numAppear'])
-        else:
-            return compare[option['cmp']](count_sublist(info,w_split),option['numAppear'])
-
-
-#function for @Between
-
-def at_between(w,c,option=None,a=None):
-    if w=='ArgY':
-        w = c.obj
-    elif w=='ArgX':
-        w = c.subj
-    if option==None:
-        option = {'attr': 'word', 'numAppear':1,'cmp':'nlt','onlyCount':False}                #For now, if onlyCount==True, then attr=='tokens'
-    if isinstance(w,tuple):
-        return w[1] in c.get_mid()[w[0]]
-    else:                                                                                   #For now,option['attr']==tokens if and only if  onlyCount==True, otherwise ==word
-        w = w.lower()
-        w_split = w.split()
-        while '' in w_split:
-            w_split.remove('')
-        info = [token.lower() for token in c.get_mid()['tokens']]
-        if option['onlyCount']:
-            return compare[option['cmp']](len(info),option['numAppear'])
-        else:
-            # print(info, w,info.count(w),type(info.count(w)),option['numAppear'],option['eq'],compare[option['eq']](info.count(w),option['numAppear']))
-            return compare[option['cmp']](count_sublist(info,w_split),option['numAppear'])
-
-
-#function for counting
-def at_lessthan(funcx,nouny,w,c):
-    if w=='There':
-        onlyCount=True
-    else:
-        onlyCount = False
-    if onlyCount:
-        return funcx(w,{'attr':nouny['attr'],'range':-1,'numAppear':nouny['num'],'cmp':'lt','onlyCount':onlyCount})(c)                #There are less than 3 words before OBJ
-    else:
-        return funcx(w, {'attr': nouny['attr'], 'range': nouny['num'], 'numAppear': 1, 'cmp': 'nlt','onlyCount': onlyCount})(c)      #the word 'x' is less than 3 words before OBJ
-
-def at_atmost(funcx,nouny,w,c):
-    if w=='There':
-        onlyCount=True
-    else:
-        onlyCount = False
-    if onlyCount:
-        return funcx(w,{'attr':nouny['attr'],'range':-1,'numAppear':nouny['num'],'cmp':'nmt','onlyCount':onlyCount})(c)                #There are at most 3 words before OBJ
-    else:
-        return funcx(w, {'attr': nouny['attr'], 'range': nouny['num'], 'numAppear': 1, 'cmp': 'nlt','onlyCount': onlyCount})(c)      #the word 'x' is at most 3 words before OBJ
-
-def at_atleast(funcx,nouny,w,c):
-    if w=='There':
-        onlyCount=True
-    else:
-        onlyCount = False
-    if onlyCount:
-        return funcx(w,{'attr':nouny['attr'],'range':-1,'numAppear':nouny['num'],'cmp':'nlt','onlyCount':onlyCount})(c)             #There are at least 3 words before OBJ
-    else:
-        return funcx(w,{'attr': nouny['attr'], 'range': nouny['num'], 'numAppear': 1, 'cmp': 'nlt','onlyCount': onlyCount})(c)      #the word 'x' is no less than 3 words before OBJ
-
-def at_morethan(funcx,nouny,w,c):
-    if w=='There':
-        onlyCount=True
-    else:
-        onlyCount = False
-    if onlyCount:
-        return funcx(w,{'attr':nouny['attr'],'range':-1,'numAppear':nouny['num'],'cmp':'mt','onlyCount':onlyCount})(c)                #There are more than 3 words before OBJ
-    else:
-        return funcx(w, {'attr': nouny['attr'], 'range': nouny['num'], 'numAppear': 1, 'cmp': 'nlt','onlyCount': onlyCount})(c)    #the word 'x' is more than 3 words before OBJ
-
-
-#function for @In0
-def at_In0(arg,w,c):
-    assert arg=='Sentence'
-    if isinstance(w,tuple):
-        return w in c.ner
-    else:
-        w = w.lower().split()
-        info = [token.lower() for token in c.tokens]
-        return count_sublist(info,w)>0
-
-def at_WordCount(nounNum,nouny,F,c):
-    if isinstance(nouny,tuple):
-        return all([F(noun, option={'attr': 'word', 'range': -1, 'numAppear': 1, 'cmp': 'nlt', 'onlyCount': False})(c) for noun in nouny]) and F(nouny[0],option={'attr': 'tokens','range': -1,'numAppear':sum([len(noun.split()) for noun in nouny]),'cmp': 'eq','onlyCount': True})(c)
-    else:
-        return F(nouny,option={'attr':'word','range':-1,'numAppear':1,'cmp':'nlt','onlyCount':False})(c) and F(nouny,option={'attr':'tokens','range':-1,'numAppear':len(nouny.split()),'cmp':'eq','onlyCount':True})(c)
-
-OPS = {
-    ".root":lambda xs:lambda c:all([x(c) for x in xs]) if type(xs)==tuple else xs(c),
-    "@Word":lambda x:x,
-    "@Is":lambda ws,p: lambda c: IsFunc(ws,p,c),
-    "@between": lambda a: lambda w,option=None:lambda c:at_between(w,c,option,a),
-    "@In0":lambda arg, w:lambda c:at_In0(arg,w,c),
-    "@And": lambda x,y:merge(x,y),
-    "@Num": lambda x,y:{'attr':y,'num':int(x)},
-    "@LessThan":lambda funcx,nouny:lambda w:lambda c:at_lessthan(funcx,nouny,w,c),
-    "@AtMost":lambda funcx,nouny:lambda w:lambda c:at_atmost(funcx,nouny,w,c),
-    "@AtLeast":lambda funcx,nouny:lambda w:lambda c:at_atleast(funcx,nouny,w,c),
-    "@MoreThan":lambda funcx,nouny:lambda w:lambda c:at_morethan(funcx,nouny,w,c),
-    "@WordCount":lambda nounNum,nouny,F:lambda useless:lambda c:at_WordCount(nounNum,nouny,F,c),
-
-    "@NumberOf":lambda x,f:[x,f],
-    "@LessThan1":lambda nounynum:lambda x:lambda c:at_lessthan(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
-    "@AtMost1":lambda nounynum:lambda x:lambda c:at_atmost(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
-    "@AtLeast1":lambda nounynum:lambda x:lambda c:at_atleast(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
-    "@MoreThan1":lambda nounynum:lambda x:lambda c:at_morethan(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
-
-
-    
+STRICT_MATCHING_OPS = {
+    ".root"       : lambda xs: lambda c: all([x(c) for x in xs]) if type(xs) == tuple else xs(c),
+    "@Word"       : lambda x: x,
+    "@Is"         : lambda ws,p: lambda c: gram_f.IsFunc(ws,p,c),
+    "@between"    : lambda a: lambda w,option=None: lambda c: gram_f.at_between(w,c,option,a),
+    "@In0"        : lambda arg: lambda w: lambda c: gram_f.at_In0(arg,w,c),
+    "@In1"        : lambda arg,w: lambda c: gram_f.at_In0(arg,w,c),
+    "@And"        : lambda x,y: gram_f.merge(x,y),
+    "@Num"        : lambda x,y: {'attr':y,'num':int(x)},
+    "@LessThan"   : lambda funcx,nouny: lambda w: lambda c: gram_f.at_lessthan(funcx,nouny,w,c),
+    "@AtMost"     : lambda funcx,nouny: lambda w: lambda c: gram_f.at_atmost(funcx,nouny,w,c),
+    "@AtLeast"    : lambda funcx,nouny: lambda w: lambda c: gram_f.at_atleast(funcx,nouny,w,c),
+    "@MoreThan"   : lambda funcx,nouny: lambda w: lambda c: gram_f.at_morethan(funcx,nouny,w,c),
+    "@WordCount"  : lambda nounNum,nouny,F: lambda useless: lambda c: gram_f.at_WordCount(nounNum,nouny,F,c),
+ 
+    "@NumberOf"   : lambda x,f: [x,f],
+    "@LessThan1"  : lambda nounynum: lambda x: lambda c: gram_f.at_lessthan(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
+    "@AtMost1"    : lambda nounynum: lambda x: lambda c: gram_f.at_atmost(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
+    "@AtLeast1"   : lambda nounynum: lambda x: lambda c: gram_f.at_atleast(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
+    "@MoreThan1"  : lambda nounynum: lambda x: lambda c: gram_f.at_morethan(x[1],{'attr':x[0],"num":int(nounynum)},'There',c),
+ 
     #By
-    "@By":lambda x,f,z:lambda c: f(x,{'attr': z['attr'], 'range': z['num'], 'numAppear': 1, 'cmp': 'nlt','onlyCount': False})(c),
-    # is xx Arg
-    "@Left0":lambda arg: lambda w,option=None:lambda c:at_POSI_0('Left',arg,w,c,option),
-    "@Right0":lambda arg: lambda w,option=None:lambda c:at_POSI_0('Right',arg,w,c,option),
-    "@Range0":lambda arg: lambda w,option=None:lambda c:at_POSI_0('Range',arg,w,c,option),
+    "@By"         : lambda x,f,z: lambda c: f(x,{'attr': z['attr'], 'range': z['num'], 'numAppear': 1, 'cmp': 'nlt','onlyCount': False})(c),
+    # is xx Arg 
+    "@Left0"      : lambda arg: lambda w,option=None: lambda c: gram_f.at_POSI_0('Left',arg,w,c,option),
+    "@Right0"     : lambda arg: lambda w,option=None: lambda c: gram_f.at_POSI_0('Right',arg,w,c,option),
+    "@Range0"     : lambda arg: lambda w,option=None: lambda c: gram_f.at_POSI_0('Range',arg,w,c,option),
+ 
+    "@Left"       : lambda arg,ws,option=None: lambda c: gram_f.at_POSI('Left',ws,arg,c,option),
+    "@Right"      : lambda arg,ws,option=None: lambda c: gram_f.at_POSI('Right',ws,arg,c,option),
 
-    "@Left":lambda arg, ws,option=None:lambda c:at_POSI('Left',ws,arg,c,option),
-    "@Right":lambda arg, ws,option=None:lambda c:at_POSI('Right',ws,arg,c,option),
+    "@Direct"     : lambda func: lambda w: lambda c: func(w,'Direct')(c),
 
-    "@Direct":lambda func:lambda w:lambda c: func(w,'Direct')(c),
+    "@StartsWith" : lambda x,y: lambda c: c.with_(x[-1],'starts',y),
+    "@EndsWith"   : lambda x,y: lambda c: c.with_(x[-1],'ends',y),
+}
 
-    "@StartsWith": lambda x,y: lambda c: c.with_(x[-1],'starts',y),
-    "@EndsWith": lambda x,y: lambda c:c.with_(x[-1],'ends',y),
+SOFT_MATCHING_OPS = {
+    ".root": lambda xs: lambda label_mat,keyword_dict,mask_mat:lambda c: torch.max(torch.tensor(sum([x(label_mat,keyword_dict,mask_mat)(c) for x in xs])-len(xs)+1).to(device),torch.tensor(0.0).to(device)) if type(xs) == tuple else xs(label_mat,keyword_dict,mask_mat)(c),
+    "@Word": lambda x: x,
+    "@Is": lambda ws, p: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.IsFunc_soft(ws, p,label_mat,keyword_dict,mask_mat, c),
+    "@between": lambda a: lambda w, option=None: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_between_soft(w, label_mat,keyword_dict,mask_mat,c, option),
+    "@And": lambda x, y: soft_gram_f.merge_soft(x, y),
+    "@Num": lambda x, y: {'attr': y, "num": int(x)},
+    "@LessThan": lambda funcx, nouny: lambda w: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_lessthan_soft(funcx, nouny, w, label_mat,keyword_dict,mask_mat,c),
+    "@AtMost": lambda funcx, nouny: lambda w: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_atmost_soft(funcx, nouny, w, label_mat,keyword_dict,mask_mat,c),
+    "@AtLeast": lambda funcx, nouny: lambda w: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_atleast_soft(funcx, nouny, w, label_mat,keyword_dict,mask_mat,c),
+    "@MoreThan": lambda funcx, nouny: lambda w: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_morethan_soft(funcx, nouny, w, label_mat,keyword_dict,mask_mat,c),
+    "@WordCount": lambda nounNum, nouny, F:lambda useless: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_WordCount_soft(nounNum,nouny,F,label_mat,keyword_dict,mask_mat,c),
+
+    "@NumberOf": lambda x, f: [x, f],
+    "@LessThan1": lambda nounynum: lambda x: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_lessthan_soft(x[1], {'attr': x[0], "num": int(nounynum)}, 'There',label_mat,keyword_dict,mask_mat,c),
+    "@AtMost1": lambda nounynum: lambda x: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_atmost_soft(x[1], {'attr': x[0], "num": int(nounynum)}, 'There', label_mat,keyword_dict,mask_mat,c),
+    "@AtLeast1": lambda nounynum: lambda x: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_atleast_soft(x[1], {'attr': x[0], "num": int(nounynum)}, 'There',label_mat,keyword_dict,mask_mat,c),
+    "@MoreThan1": lambda nounynum: lambda x: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_morethan_soft(x[1], {'attr': x[0], "num": int(nounynum)}, 'There',label_mat,keyword_dict,mask_mat,c),
+
+    "@In0": lambda arg: lambda w: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_In0_soft(arg, w, label_mat,keyword_dict,mask_mat,c),
+    "@In1": lambda arg,w: lambda label_mat,keyword_dict,mask_mat: lambda c: soft_gram_f.at_In0_soft(arg, w, label_mat,keyword_dict,mask_mat,c),
+    "@By": lambda x, f, z: lambda label_mat,keyword_dict,mask_mat:lambda c: f(x, {'attr': z['attr'], 'range': z['num'], 'numAppear': 1, 'cmp': 'nlt','onlyCount': False})(label_mat,keyword_dict,mask_mat)(c),
+
+    "@Left0": lambda arg: lambda w, option=None: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_POSI_0_soft('Left', arg, w, label_mat,keyword_dict,mask_mat,c, option),
+
+    "@Right0": lambda arg: lambda w, option=None: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_POSI_0_soft('Right', arg, w, label_mat,keyword_dict,mask_mat,c, option),
+
+    "@Range0": lambda arg: lambda w, option=None: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_POSI_0_soft('Range', arg, w, label_mat,keyword_dict,mask_mat,c, option),
+
+    "@Left": lambda arg, ws, option=None: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_POSI_soft('Left', ws, arg, label_mat,keyword_dict,mask_mat,c, option),
+    "@Right": lambda arg, ws, option=None: lambda label_mat,keyword_dict,mask_mat:lambda c: soft_gram_f.at_POSI_soft('Right', ws, arg, label_mat,keyword_dict,mask_mat,c, option),
+
+    "@Direct": lambda func: lambda w: lambda label_mat,keyword_dict,mask_mat:lambda c: func(w, 'Direct')(label_mat,keyword_dict,mask_mat)(c)
 }
