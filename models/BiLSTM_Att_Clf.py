@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as f
 
 class BiLSTM_Att_Clf(nn.Module):
+    """
+        BiLSTM + Attention Classifier. Uses a single layer head to do the final classification.
+    """
     def __init__(self, emb_weight, padding_idx, emb_dim, hidden_dim, cuda, number_of_classes, custom_token_count=0,
                  n_layers=2, encoding_dropout=0.5, padding_score=-1e30):
         """
@@ -16,6 +19,7 @@ class BiLSTM_Att_Clf(nn.Module):
                                             (we are using a bi-lstm, final hidden_dim will be 2*hidden_dim)
                 cuda               (bool) : is a gpu available for usage
                 number_of_classes   (int) : number of classes to predict over
+                custom_token_count  (int) : size of custom vocabulary
                 n_layers            (int) : number of layers for the bi-lstm that encodes n-gram representations
                                             of a token 
                 encoding_dropout  (float) : percentage of vector's representation to be randomly zeroed
@@ -113,7 +117,9 @@ class BiLSTM_Att_Clf(nn.Module):
             Create raw encodings for a sequence of tokens
             Arguments:
                 seqs (torch.tensor) : N x seq_len
-            
+                seq_lengths   (arr) : array of seq lengths
+                h0   (torch.tensor) : (num_directions * num_layers) x N x hidden_dim -- constant value
+                c0   (torch.tensor) : (num_directions * num_layers) x N x hidden_dim -- constant value
             Returns:
                 seq_embs, padding_indexes : N x seq_len x encoding_dim, N x seq_len
         """
@@ -140,6 +146,16 @@ class BiLSTM_Att_Clf(nn.Module):
         return classification_scores
 
     def forward(self, seqs, seq_lengths, h0, c0):
+         """
+            Forward for bilstm + att classification
+            Arguments:
+                seqs (torch.tensor) : N x seq_len
+                seq_lengths   (arr) : array of seq lengths
+                h0   (torch.tensor) : (num_directions * num_layers) x N x hidden_dim -- constant value
+                c0   (torch.tensor) : (num_directions * num_layers) x N x hidden_dim -- constant value
+            Returns:
+                torch.tensor : scores over label space for each instance
+        """
         seq_encodings, padding_indexes = self.encode_tokens(seqs, seq_lengths,  h0, c0) # N x seq_len x encoding_dim, N x seq_len
         pooled_encodings = self.attention_pooling(seq_encodings, padding_indexes).squeeze(1) # N x encoding_dim
         classification_scores = self.classification_head(pooled_encodings)
