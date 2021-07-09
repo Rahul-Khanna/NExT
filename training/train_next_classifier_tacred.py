@@ -168,28 +168,6 @@ def main():
 
     loss_per_epoch = []
 
-    if args.load_clf_model:
-        clf.load_state_dict(torch.load("../data/saved_models/Next-Clf_{}.p".format(args.experiment_name)))
-        print("loaded model")
-
-        with open("../data/result_data/test_f1_per_epoch_Next-Clf_{}.csv".format(args.experiment_name)) as f:
-            reader=csv.reader(f)
-            next(reader)
-            for row in reader:
-                test_epoch_f1_scores.append(row)
-                if float(row[-1]) > best_test_f1_score:
-                    best_test_f1_score = float(row[-1])
-        
-        with open("../data/result_data/dev_f1_per_epoch_Next-Clf_{}.csv".format(args.experiment_name)) as f:
-            reader=csv.reader(f)
-            next(reader)
-            for row in reader:
-                dev_epoch_f1_scores.append(row)
-                if float(row[-1]) > best_dev_f1_score:
-                    best_dev_f1_score = float(row[-1])
-        
-        print("loaded past results")
-
     # Get queries ready for Find Module
     lfind_query_tokens, _ = BaseVariableLengthDataset.variable_length_batch_as_tensors(tokenized_queries, pad_idx)
     lfind_query_tokens = lfind_query_tokens.to(device).detach()
@@ -246,14 +224,36 @@ def main():
     else:
         with open("../data/training_data/soft_scores_{}.p".format(args.experiment_name), "rb") as f:
             soft_scores = pickle.load(f)
-
+    
     clf = BiLSTM_Att_Clf.BiLSTM_Att_Clf(vocab.vectors, pad_idx, args.emb_dim, args.hidden_dim,
                                         torch.cuda.is_available(), number_of_classes,
                                         custom_token_count=custom_vocab_length)
+    
+    if args.load_clf_model:
+        clf.load_state_dict(torch.load("../data/saved_models/Next-Clf_{}.p".format(args.experiment_name)))
+        print("loaded model")
 
-    del vocab
+        with open("../data/result_data/test_f1_per_epoch_Next-Clf_{}.csv".format(args.experiment_name)) as f:
+            reader=csv.reader(f)
+            next(reader)
+            for row in reader:
+                test_epoch_f1_scores.append(row)
+                if float(row[-1]) > best_test_f1_score:
+                    best_test_f1_score = float(row[-1])
+        
+        with open("../data/result_data/dev_f1_per_epoch_Next-Clf_{}.csv".format(args.experiment_name)) as f:
+            reader=csv.reader(f)
+            next(reader)
+            for row in reader:
+                dev_epoch_f1_scores.append(row)
+                if float(row[-1]) > best_dev_f1_score:
+                    best_dev_f1_score = float(row[-1])
+        
+        print("loaded past results")
 
     clf = clf.to(device)
+    
+    del vocab
 
     optimizer = SGD(clf.parameters(), lr=args.learning_rate)
 
